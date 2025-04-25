@@ -262,8 +262,6 @@ func (auth *Auth) GetSessionCookie(c *gin.Context) (types.SessionCookie, error) 
 		// Claims not present or nil, which is fine
 		claims = nil
 	}
-	// --- END retrieving claims ---
-
 
 	log.Debug().
 		Str("username", username).
@@ -287,31 +285,86 @@ func (auth *Auth) UserAuthConfigured() bool {
 	return len(auth.Config.Users) > 0
 }
 
-func (auth *Auth) ResourceAllowed(c *gin.Context, context types.UserContext) (bool, error) {
-	// Get headers
-	host := c.Request.Header.Get("X-Forwarded-Host")
+func (auth *Auth) ResourceAllowed(userContext types.UserContext, labels types.TinyauthLabels) (bool, error) {
 
-	// Get app id
-	appId := strings.Split(host, ".")[0]
-
-	// Get the container labels
-	labels, err := auth.Docker.GetLabels(appId)
-
-	// If there is an error, return false
-	if err != nil {
-		return false, err
+	// --- Check 1: Explicit Whitelist (using app-specific labels) ---
+	isWhitelisted := false
+	if userContext.OAuth {
+		log.Debug().Msg("Checking OAuth whitelist from label")
+		// Use Username field which holds email/sub for OAuth users
+		isWhitelisted = utils.CheckWhitelist(labels.OAuthWhitelist, userContext.Username)
+	} else { // Assumes username/password auth
+		log.Debug().Msg("Checking users whitelist from label")
+		isWhitelisted = utils.CheckWhitelist(labels.Users, userContext.Username)
 	}
 
-	// Check if oauth is allowed
-	if context.OAuth {
-		log.Debug().Msg("Checking OAuth whitelist")
-		return utils.CheckWhitelist(labels.OAuthWhitelist, context.Username), nil
+	// If the user IS explicitly whitelisted for this app, grant access immediately.
+	if isWhitelisted {
+		log.Info().Str("username", userContext.Username).Msg("Access granted: User is explicitly whitelisted for this app.")
+		return true, nil
+	}
+	log.Debug().Str("username", userContext.Username).Msg("User is not explicitly whitelisted for this app, checking groups...")
+
+	// --- Check 2: Group Membership (only if not whitelisted) ---
+	requiredGroupsLabel := strings.TrimSpace(labels.RequiredGroups)
+	if requiredGroupsLabel == "" {
+		// User was not whitelisted AND no groups are defined for this app -> Deny access.
+		log.Warn().Str("username", userContext.Username).Msg("Access denied: User not whitelisted and no required groups specified.")
+		return false, nil
 	}
 
-	// Check users
-	log.Debug().Msg("Checking users")
+	// Required groups ARE specified, check if the user has one.
+	log.Debug().Str("requiredGroups", requiredGroupsLabel).Msg("Checking required groups (user was not whitelisted)")
+	userGroups := []string{} // Initialize empty slice for user's groups
 
-	return utils.CheckWhitelist(labels.Users, context.Username), nil
+	if userContext.Claims != nil {
+		if groupsClaim, ok := userContext.Claims["groups"]; ok {
+			if groupsArray, ok := groupsClaim.([]interface{}); ok {
+				for _, groupInterface := range groupsArray {
+					if groupStr, ok := groupInterface.(string); ok {
+						userGroups = append(userGroups, groupStr)
+					} else {
+						log.Warn().Interface("group", groupInterface).Msg("Non-string value found in groups claim array")
+					}
+				}
+			} else {
+				log.Warn().Str("type", fmt.Sprintf("%T", groupsClaim)).Msg("User 'groups' claim is not an array type")
+			}
+		} else {
+			log.Debug().Msg("User claims do not contain 'groups' field")
+		}
+	} else {
+		log.Debug().Msg("User context does not contain claims")
+	}
+
+	log.Debug().Strs("userGroups", userGroups).Msg("User groups extracted from claims")
+
+	requiredGroups := strings.Split(requiredGroupsLabel, ",")
+	hasRequiredGroup := false
+	for _, reqGroup := range requiredGroups {
+		trimmedReqGroup := strings.TrimSpace(reqGroup)
+		if trimmedReqGroup == "" {
+			continue
+		}
+		for _, userGroup := range userGroups {
+			if userGroup == trimmedReqGroup {
+				hasRequiredGroup = true
+				break
+			}
+		}
+		if hasRequiredGroup {
+			break
+		}
+	}
+
+	// Grant access ONLY if they had one of the required groups (since they weren't whitelisted)
+	if hasRequiredGroup {
+		log.Info().Str("username", userContext.Username).Msg("Access granted: User not whitelisted but has a required group.")
+		return true, nil
+	} else {
+		log.Warn().Str("username", userContext.Username).Strs("userGroups", userGroups).Str("requiredGroups", requiredGroupsLabel).Msg("Access denied: User not whitelisted and does not have required group.")
+		return false, nil
+	}
 }
 
 func (auth *Auth) AuthEnabled(c *gin.Context) (bool, error) {

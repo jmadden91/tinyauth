@@ -38,182 +38,215 @@ type Handlers struct {
 }
 
 func (h *Handlers) AuthHandler(c *gin.Context) {
-	var proxy types.Proxy // Declaration for proxy
+	// --- Bind Proxy URI ---
+	var proxy types.Proxy
 	err := c.BindUri(&proxy)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to bind URI")
-		c.JSON(400, gin.H{"status": 400, "message": "Bad Request"})
+		log.Error().Err(err).Msg("Failed to bind proxy URI")
+		c.JSON(http.StatusBadRequest, gin.H{"status": http.StatusBadRequest, "message": "Bad Request"})
 		return
 	}
+	log.Debug().Str("proxy", proxy.Proxy).Msg("Determined proxy type")
 
+	// --- Check if Browser ---
 	isBrowser := strings.Contains(c.Request.Header.Get("Accept"), "text/html")
+	if isBrowser {
+		log.Debug().Msg("Request likely from browser")
+	} else {
+		log.Debug().Msg("Request likely not from browser")
+	}
 
-	log.Debug().Interface("proxy", proxy.Proxy).Msg("Got proxy")
-
+	// --- Get Forwarded Headers ---
 	uri := c.Request.Header.Get("X-Forwarded-Uri")
 	proto := c.Request.Header.Get("X-Forwarded-Proto")
 	host := c.Request.Header.Get("X-Forwarded-Host")
+	log.Debug().Str("host", host).Str("uri", uri).Str("proto", proto).Msg("Forwarded headers")
 
-	authEnabled, err := h.Auth.AuthEnabled(c)
-
+	// Get App ID *before* checking login status
 	appId := strings.Split(host, ".")[0]
-	labels, err := h.Docker.GetLabels(appId)
+	log.Debug().Str("appId", appId).Msg("Determined App ID from host")
 
-	if !authEnabled {
-		// Set label headers only if auth is disabled
-		for key, value := range labels.Headers {
-			log.Debug().Str("key", key).Str("value", value).Msg("Setting label header (auth disabled)")
-			c.Header(key, value)
+	// --- Fetch Labels Once ---
+	labels, err := h.Docker.GetLabels(appId)
+	if err != nil {
+		log.Error().Err(err).Str("appId", appId).Msg("Failed to get docker labels for app")
+		// Handle error appropriately (e.g., return 500 or default deny)
+		if proxy.Proxy == "nginx" || !isBrowser {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": http.StatusInternalServerError, "message": "Internal Server Error retrieving app config"})
+		} else {
+			c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=label_fetch", h.Config.AppURL))
 		}
-		c.JSON(200, gin.H{"status": 200, "message": "Authenticated (Auth Disabled)"})
+		return
+	}
+	log.Debug().Interface("labels", labels).Msg("Fetched labels for app")
+	// --- End Fetch Labels Once ---
+
+	// Check if auth is enabled for this request path (using tinyauth.allowed label if present)
+	authEnabled, err := h.Auth.AuthEnabled(c) // This function uses headers, not labels directly
+	if err != nil {
+		log.Error().Err(err).Str("appId", appId).Msg("Failed check if auth is enabled for path")
+		// Handle error
+		if proxy.Proxy == "nginx" || !isBrowser {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": http.StatusInternalServerError, "message": "Internal Server Error checking auth status"})
+		} else {
+			c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=auth_check", h.Config.AppURL))
+		}
 		return
 	}
 
+	if !authEnabled {
+		log.Info().Str("uri", uri).Str("appId", appId).Msg("Auth disabled for this path based on tinyauth.allowed label")
+		// Auth not required for this path, pass through (setting headers from labels)
+		for key, value := range labels.Headers { // Use already fetched labels
+			log.Debug().Str("key", key).Str("value", value).Msg("Setting label header (auth disabled)")
+			c.Header(key, value)
+		}
+		c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Authenticated (Auth Disabled)"})
+		return
+	}
+	log.Debug().Str("uri", uri).Str("appId", appId).Msg("Auth enabled for this path")
+
+	// Auth is required, get user context
 	userContext := h.Hooks.UseUserContext(c)
 
 	if userContext.IsLoggedIn {
-		log.Debug().Msg("User is logged in, checking resource access")
+		log.Debug().Str("username", userContext.Username).Msg("User is logged in, checking resource access")
 
-		appAllowed, err := h.Auth.ResourceAllowed(c, userContext)
-		if err != nil {
-			// ... (error handling for ResourceAllowed) ...
-			return
-		}
+		// --- Call Modified ResourceAllowed ---
+		appAllowed, err := h.Auth.ResourceAllowed(userContext, labels) // Pass fetched labels
+		// --- End Call Modified ResourceAllowed ---
 
-		log.Debug().Bool("appAllowed", appAllowed).Msg("Checking if app is allowed")
-
-		if !appAllowed {
-			log.Warn().Str("username", userContext.Username).Str("host", host).Msg("User not allowed for this resource")
-			c.Header("WWW-Authenticate", "Basic realm=\"tinyauth\"")
+		if err != nil { // Check for actual errors from ResourceAllowed if any are added later
+			log.Error().Err(err).Str("appId", appId).Msg("Error checking resource access")
+			// Handle error
 			if proxy.Proxy == "nginx" || !isBrowser {
-				c.JSON(401, gin.H{"status": 401, "message": "Unauthorized"})
+				c.JSON(http.StatusInternalServerError, gin.H{"status": http.StatusInternalServerError, "message": "Internal Server Error checking permissions"})
 			} else {
-				// ... (redirect to /unauthorized) ...
+				c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=permission_check", h.Config.AppURL))
 			}
 			return
 		}
 
+		// Log the result before the check
+		log.Debug().Bool("appAllowed", appAllowed).Msg("Resource allowed check result")
+
+		if !appAllowed {
+			log.Warn().Str("username", userContext.Username).Str("host", host).Msg("User not allowed for this resource (failed whitelist or group check)")
+			// Set WWW-Authenticate header for 401
+			c.Header("WWW-Authenticate", "Basic realm=\"tinyauth\"")
+			if proxy.Proxy == "nginx" || !isBrowser {
+				c.JSON(http.StatusUnauthorized, gin.H{"status": http.StatusUnauthorized, "message": "Unauthorized"})
+			} else {
+				// Build query for unauthorized page
+				queries, queryErr := query.Values(types.UnauthorizedQuery{
+					Username: userContext.Username,
+					Resource: appId, // Use appId as the resource name
+				})
+				if queryErr != nil {
+					log.Error().Err(queryErr).Msg("Failed to build unauthorized query params")
+					c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=unauth_query", h.Config.AppURL))
+				} else {
+					c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/unauthorized?%s", h.Config.AppURL, queries.Encode()))
+				}
+			}
+			return
+		}
+
+		// User is allowed, set headers
+		log.Info().Str("username", userContext.Username).Str("appId", appId).Msg("Access granted")
+
+		// Set specific X-Remote-* headers based on claims
 		if userContext.Claims != nil {
 			log.Debug().Msg("Setting specific headers from claims")
 
-			// Helper function to safely get string claim from the map
+			// Helper function to safely get string claim
 			getStringClaim := func(key string) string {
 				if val, ok := userContext.Claims[key]; ok {
-					// Try asserting as string directly
 					if strVal, ok := val.(string); ok {
 						return strVal
 					}
-					// Handle cases where it might be parsed as something else but convertible
-					return fmt.Sprintf("%v", val) // Fallback conversion
+					return fmt.Sprintf("%v", val)
 				}
-				return "" // Return empty string if claim doesn't exist
+				return ""
 			}
 
-			// 1. Set X-Remote-User from preferred_username
+			// Set X-Remote-User from preferred_username
 			preferredUsername := getStringClaim("preferred_username")
 			if preferredUsername != "" {
-				log.Debug().Str("key", "X-Remote-User").Str("value", preferredUsername).Msg("Setting header")
 				c.Header("X-Remote-User", preferredUsername)
-			} else {
-				log.Warn().Msg("Claim 'preferred_username' not found or not a string, 'X-Remote-User' header not set.")
 			}
 
-			// 2. Set X-Remote-Name from given_name and family_name (or fallback to name)
+			// Set X-Remote-Name from given_name and family_name (or fallback to name)
 			givenName := getStringClaim("given_name")
 			familyName := getStringClaim("family_name")
 			fullName := strings.TrimSpace(givenName + " " + familyName)
 			if fullName != "" {
-				log.Debug().Str("key", "X-Remote-Name").Str("value", fullName).Msg("Setting header")
 				c.Header("X-Remote-Name", fullName)
 			} else {
 				nameClaim := getStringClaim("name")
 				if nameClaim != "" {
-					log.Debug().Str("key", "X-Remote-Name").Str("value", nameClaim).Msg("Setting header (using 'name' claim fallback)")
 					c.Header("X-Remote-Name", nameClaim)
-				} else {
-					log.Warn().Msg("Claims 'given_name'/'family_name' and 'name' not found or not strings, 'X-Remote-Name' header not set.")
 				}
 			}
 
-			// 3. Set X-Remote-Email from email
+			// Set X-Remote-Email from email
 			email := getStringClaim("email")
 			if email != "" {
-				log.Debug().Str("key", "X-Remote-Email").Str("value", email).Msg("Setting header")
 				c.Header("X-Remote-Email", email)
-			} else {
-				log.Warn().Msg("Claim 'email' not found or not a string, 'X-Remote-Email' header not set.")
 			}
 
-			// 4. Example: Set X-Remote-Groups (optional, based on your needs and provider image)
+			// Set X-Remote-Groups from groups claim
 			if groupsVal, ok := userContext.Claims["groups"]; ok {
 				if groupsArray, ok := groupsVal.([]interface{}); ok {
 					groupStrings := []string{}
 					for _, group := range groupsArray {
-						if groupStr, ok := group.(string); ok { // Ensure each element is a string
+						if groupStr, ok := group.(string); ok {
 							groupStrings = append(groupStrings, groupStr)
 						}
 					}
 					if len(groupStrings) > 0 {
-						// Join groups with a comma (or choose another separator like ';')
-						groupsHeaderValue := strings.Join(groupStrings, ",")
-						log.Debug().Str("key", "X-Remote-Groups").Str("value", groupsHeaderValue).Msg("Setting header")
-						c.Header("X-Remote-Groups", groupsHeaderValue)
+						c.Header("X-Remote-Groups", strings.Join(groupStrings, ","))
 					}
-				} else {
-					log.Warn().Str("type", fmt.Sprintf("%T", groupsVal)).Msg("Claim 'groups' exists but is not an array, 'X-Remote-Groups' header not set.")
 				}
 			}
-
-			// Can add more specific claims here if needed following the pattern:
-			// claimValue := getStringClaim("some_other_claim")
-			// if claimValue != "" {
-			//    c.Header("X-Remote-Some-Other-Claim", claimValue)
-			// }
-
-		} else {
-			log.Debug().Msg("No claims found in user context to set specific headers.")
+			// Add any other specific headers needed
 		}
 
-		// Set standard headers (Remote-User and from docker labels)
+		// Set standard Remote-User (using email/sub identifier)
+		log.Debug().Str("key", "Remote-User").Str("value", userContext.Username).Msg("Setting standard header")
 		c.Header("Remote-User", userContext.Username)
+
+		// Set headers from Docker labels (use fetched labels)
 		for key, value := range labels.Headers {
 			log.Debug().Str("key", key).Str("value", value).Msg("Setting label header")
 			c.Header(key, value)
 		}
 
 		log.Debug().Msg("Authenticated and authorized, returning 200 OK")
-		c.JSON(200, gin.H{
-			"status":  200,
+		c.JSON(http.StatusOK, gin.H{
+			"status":  http.StatusOK,
 			"message": "Authenticated",
 		})
 		return
 	}
 
 	// User is not logged in
-	log.Debug().Msg("Unauthorized, redirecting to login or returning 401")
+	log.Info().Str("appId", appId).Msg("User not logged in, denying access")
 	c.Header("WWW-Authenticate", "Basic realm=\"tinyauth\"")
 	if proxy.Proxy == "nginx" || !isBrowser {
-		c.JSON(401, gin.H{
-			"status":  401,
-			"message": "Unauthorized",
+		c.JSON(http.StatusUnauthorized, gin.H{"status": http.StatusUnauthorized, "message": "Unauthorized"})
+	} else {
+		// Build query for login redirect
+		queries, queryErr := query.Values(types.LoginQuery{
+			RedirectURI: fmt.Sprintf("%s://%s%s", proto, host, uri),
 		})
-		return
+		if queryErr != nil {
+			log.Error().Err(queryErr).Msg("Failed to build login redirect query params")
+			c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=login_redirect_query", h.Config.AppURL))
+		} else {
+			c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/?%s", h.Config.AppURL, queries.Encode()))
+		}
 	}
-
-	queries, err := query.Values(types.LoginQuery{
-		RedirectURI: fmt.Sprintf("%s://%s%s", proto, host, uri),
-	})
-
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to build queries")
-		c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error", h.Config.AppURL))
-		return
-	}
-
-	log.Debug().Interface("redirect_uri", fmt.Sprintf("%s://%s%s", proto, host, uri)).Msg("Redirecting to login")
-
-	// Redirect to login
-	c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/?%s", h.Config.AppURL, queries.Encode()))
 }
 
 func (h *Handlers) LoginHandler(c *gin.Context) {
