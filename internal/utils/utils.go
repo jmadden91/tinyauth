@@ -204,10 +204,10 @@ func GetTinyauthLabels(labels map[string]string) types.TinyauthLabels {
 					}
 					tinyauthLabels.Headers[headerSplit[0]] = headerSplit[1]
 				}
-			case "tinyauth.required_groups":
+			case "tinyauth.groups.required":
 				tinyauthLabels.RequiredGroups = value
-				log.Debug().Str("label", label).Msg("Found label")
 			}
+			
 		}
 	}
 

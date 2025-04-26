@@ -4,49 +4,68 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"errors" // Add errors import if not already present
 
 	"github.com/rs/zerolog/log"
 )
 
-// We are assuming that the generic provider will return a JSON object with an email field
+// Modify the response struct to include groups
 type GenericUserInfoResponse struct {
-	Email string `json:"email"`
+	Email             string   `json:"email"`
+	Groups            []string `json:"groups"`
+	Name              string   `json:"name"`
+	GivenName         string   `json:"given_name"`
+	FamilyName        string   `json:"family_name"`
+	PreferredUsername string   `json:"preferred_username"`
+	Sub string `json:"sub"`
 }
 
-func GetGenericEmail(client *http.Client, url string) (string, error) {
-	// Using the oauth client get the user info url
+// Update return signature - returning the whole struct might be easier
+func GetGenericUserInfo(client *http.Client, url string) (userInfo GenericUserInfoResponse, err error) {
+	// Initialize empty struct
+    userInfo = GenericUserInfoResponse{}
+
 	res, err := client.Get(url)
-
-	// Check if there was an error
 	if err != nil {
-		return "", err
+		log.Error().Err(err).Str("url", url).Msg("Failed to get userinfo from generic provider")
+		return userInfo, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		errMsg := "Generic provider userinfo endpoint returned non-OK status"
+		log.Error().Int("status", res.StatusCode).Str("url", url).Msg(errMsg)
+		return userInfo, errors.New(errMsg)
 	}
 
-	log.Debug().Msg("Got response from generic provider")
-
-	// Read the body of the response
 	body, err := io.ReadAll(res.Body)
-
-	// Check if there was an error
 	if err != nil {
-		return "", err
+		log.Error().Err(err).Str("url", url).Msg("Failed to read userinfo response body")
+		return userInfo, err
+	}
+	log.Debug().Bytes("body", body).Msg("Read userinfo body from generic provider")
+
+	// Unmarshal into the userInfo struct
+	err = json.Unmarshal(body, &userInfo)
+	if err != nil {
+		log.Error().Err(err).Str("url", url).Msg("Failed to parse userinfo JSON")
+		return userInfo, err
 	}
 
-	log.Debug().Msg("Read body from generic provider")
+	// Log parsed info
+	log.Debug().
+		Str("email", userInfo.Email).
+		Strs("groups", userInfo.Groups).
+		Str("name", userInfo.Name).
+		Str("preferred_username", userInfo.PreferredUsername).
+		Str("sub", userInfo.Sub).
+		Msg("Parsed userinfo from generic provider")
 
-	// Parse the body into a user struct
-	var user GenericUserInfoResponse
-
-	// Unmarshal the body into the user struct
-	err = json.Unmarshal(body, &user)
-
-	// Check if there was an error
-	if err != nil {
-		return "", err
+	// Check if essential identifier (e.g., email or sub) is present
+	if userInfo.Email == "" && userInfo.Sub == "" {
+	    log.Error().Msg("Userinfo response missing essential identifier (email or sub)")
+	    return userInfo, errors.New("userinfo missing identifier")
 	}
 
-	log.Debug().Msg("Parsed user from generic provider")
-
-	// Return the email
-	return user.Email, nil
+	return userInfo, nil
 }

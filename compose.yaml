@@ -1,0 +1,24 @@
+services:
+  tinyauth:
+    container_name: tinyauth
+    image: tinyauth-custom:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file: .env
+    networks:
+      - proxy
+
+  whoami:
+    container_name: whoami
+    image: traefik/whoami
+    networks:
+      - proxy
+    restart: unless-stopped
+    labels:
+      - "tinyauth.groups.required=admin"
+
+networks:
+  proxy:
+    external: true
+
+
