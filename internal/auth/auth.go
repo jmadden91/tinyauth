@@ -144,48 +144,36 @@ func (auth *Auth) EmailWhitelisted(emailSrc string) bool {
 }
 
 func (auth *Auth) CreateSessionCookie(c *gin.Context, data *types.SessionCookie) error {
-	log.Debug().Msg("Creating session cookie")
+    log.Debug().Msg("Creating session cookie")
+    session, err := auth.GetSession(c)
+    if err != nil { return err } // Error already logged
 
-	// Get session
-	session, err := auth.GetSession(c)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get session")
-		return err
-	}
+    log.Debug().
+        Str("username", data.Username). // This is the primary ID (email/sub)
+        Str("provider", data.Provider).
+        Str("groups", data.Groups).
+        Str("email", data.Email).             // Log new field
+        Str("name", data.Name).               // Log new field
+        Str("preferredUsername", data.PreferredUsername). // Log new field
+        Bool("totpPending", data.TotpPending).
+        Msg("Setting session cookie values")
 
-	log.Debug().Msg("Setting session cookie values")
+    var sessionExpiry int
+    if data.TotpPending { sessionExpiry = 3600 } else { sessionExpiry = auth.Config.SessionExpiry }
 
-	// Calculate expiry
-	var sessionExpiry int
-	if data.TotpPending {
-		sessionExpiry = 3600 // Shorter expiry for pending TOTP
-	} else {
-		sessionExpiry = auth.Config.SessionExpiry
-	}
+    // Set data
+    session.Values["username"] = data.Username // Primary ID
+    session.Values["provider"] = data.Provider
+    session.Values["expiry"] = time.Now().Add(time.Duration(sessionExpiry) * time.Second).Unix()
+    session.Values["totpPending"] = data.TotpPending
+    session.Values["groups"] = data.Groups
+    session.Values["email"] = data.Email                         
+    session.Values["name"] = data.Name                          
+    session.Values["preferred_username"] = data.PreferredUsername
 
-	// Set data
-	session.Values["username"] = data.Username
-	session.Values["provider"] = data.Provider
-	session.Values["expiry"] = time.Now().Add(time.Duration(sessionExpiry) * time.Second).Unix()
-	session.Values["totpPending"] = data.TotpPending
-	// ADD saving claims
-	if data.Claims != nil {
-		session.Values["claims"] = data.Claims
-		log.Debug().Interface("claims", data.Claims).Msg("Adding claims to session")
-	} else {
-		// Ensure claims field is removed if not provided
-		delete(session.Values, "claims")
-	}
-
-	// Save session
-	err = session.Save(c.Request, c.Writer)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to save session")
-		return err
-	}
-
-	log.Debug().Msg("Session cookie created/updated")
-	return nil
+    err = session.Save(c.Request, c.Writer)
+    if err != nil { log.Error().Err(err).Msg("Failed to save session"); return err }
+    return nil
 }
 
 func (auth *Auth) DeleteSessionCookie(c *gin.Context) error {
@@ -215,71 +203,54 @@ func (auth *Auth) DeleteSessionCookie(c *gin.Context) error {
 }
 
 func (auth *Auth) GetSessionCookie(c *gin.Context) (types.SessionCookie, error) {
-	log.Debug().Msg("Getting session cookie")
+    log.Debug().Msg("Getting session cookie")
+    session, err := auth.GetSession(c)
+    if err != nil { return types.SessionCookie{}, err } // Error logged in GetSession
 
-	// Get session
-	session, err := auth.GetSession(c)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get session")
-		return types.SessionCookie{}, err
-	}
+    // Get essential data
+    username, usernameOk := session.Values["username"].(string)
+    provider, providerOk := session.Values["provider"].(string)
+    expiry, expiryOk := session.Values["expiry"].(int64)
+    totpPending, totpPendingOk := session.Values["totpPending"].(bool)
 
-	// Get core data from session
-	username, usernameOk := session.Values["username"].(string)
-	provider, providerOK := session.Values["provider"].(string)
-	expiry, expiryOk := session.Values["expiry"].(int64)
-	totpPending, totpPendingOk := session.Values["totpPending"].(bool)
+    if !usernameOk || !providerOk || !expiryOk || !totpPendingOk {
+        log.Warn().Msg("Session cookie is missing essential data")
+        return types.SessionCookie{}, nil
+    }
 
-	// Basic check for essential fields
-	if !usernameOk || !providerOK || !expiryOk || !totpPendingOk {
-		log.Warn().Msg("Session cookie is missing essential data")
-		// Clear potentially inconsistent session
-		auth.DeleteSessionCookie(c)
-		return types.SessionCookie{}, nil
-	}
+    // Check expiry first
+    if time.Now().Unix() > expiry {
+        log.Warn().Msg("Session cookie expired")
+        auth.DeleteSessionCookie(c)
+        return types.SessionCookie{}, nil
+    }
 
-	// Check if the cookie has expired
-	if time.Now().Unix() > expiry {
-		log.Warn().Msg("Session cookie expired")
-		auth.DeleteSessionCookie(c)
-		return types.SessionCookie{}, nil
-	}
+    // Get additional fields (handle missing fields gracefully)
+    groups, _ := session.Values["groups"].(string)               // Default "" if missing/wrong type
+    email, _ := session.Values["email"].(string)                 // Default ""
+    name, _ := session.Values["name"].(string)                   // Default ""
+    preferredUsername, _ := session.Values["preferred_username"].(string) // Default ""
 
-	// --- ADD retrieving claims ---
-	var claims map[string]interface{}
-	claimsInterface, claimsOk := session.Values["claims"]
-	if claimsOk && claimsInterface != nil {
-		// Perform type assertion
-		claims, claimsOk = claimsInterface.(map[string]interface{})
-		if !claimsOk {
-			log.Warn().Msg("Session cookie 'claims' field is not of type map[string]interface{}")
-			// Optionally clear the session if claims are corrupted
-			// auth.DeleteSessionCookie(c)
-			// return types.SessionCookie{}, errors.New("corrupted claims data in session")
-			claims = nil // Treat as if claims are not present
-		}
-	} else {
-		// Claims not present or nil, which is fine
-		claims = nil
-	}
-	// --- END retrieving claims ---
+    log.Debug().
+        Str("username", username).
+        Str("provider", provider).
+        Int64("expiry", expiry).
+        Bool("totpPending", totpPending).
+        Str("groups", groups).
+        Str("email", email).
+        Str("name", name).
+        Str("preferredUsername", preferredUsername).
+        Msg("Parsed session cookie")
 
-
-	log.Debug().
-		Str("username", username).
-		Str("provider", provider).
-		Int64("expiry", expiry).
-		Bool("totpPending", totpPending).
-		Interface("claims", claims). // Log claims for debugging
-		Msg("Parsed cookie")
-
-	// Return the cookie
-	return types.SessionCookie{
-		Username:    username,
-		Provider:    provider,
-		TotpPending: totpPending,
-		Claims:      claims, // Add claims here
-	}, nil
+    return types.SessionCookie{
+        Username:            username,
+        Provider:            provider,
+        TotpPending:         totpPending,
+        Groups:              groups,
+        Email:               email,
+        Name:                name,
+        PreferredUsername:   preferredUsername,
+    }, nil
 }
 
 func (auth *Auth) UserAuthConfigured() bool {
@@ -288,30 +259,71 @@ func (auth *Auth) UserAuthConfigured() bool {
 }
 
 func (auth *Auth) ResourceAllowed(c *gin.Context, context types.UserContext) (bool, error) {
-	// Get headers
-	host := c.Request.Header.Get("X-Forwarded-Host")
+    host := c.Request.Header.Get("X-Forwarded-Host")
+    appId := strings.Split(host, ".")[0]
+    labels, err := auth.Docker.GetLabels(appId)
+    if err != nil {
+        log.Error().Err(err).Str("appId", appId).Msg("Failed to get Docker labels for resource check")
+        return false, err
+    }
 
-	// Get app id
-	appId := strings.Split(host, ".")[0]
+    // --- Group Check ---
+    if labels.RequiredGroups == "" {
+        log.Debug().Str("appId", appId).Str("username", context.Username).Msg("No required groups specified via label, access granted.")
+        return true, nil
+    }
 
-	// Get the container labels
-	labels, err := auth.Docker.GetLabels(appId)
+    // Required groups are specified via label. Now check user's groups FROM THE CONTEXT.
+    // Use userContext.Groups instead of the removed groupsHeader argument
+    if len(context.Groups) == 0 {
+        log.Warn().Str("appId", appId).Str("username", context.Username).Msg("Access denied: Required groups specified, but user context has no groups.")
+        return false, nil // Required groups, but user has none in their context
+    }
 
-	// If there is an error, return false
-	if err != nil {
-		return false, err
-	}
+    // Parse required groups (trimming spaces)
+    requiredGroupsRaw := strings.Split(labels.RequiredGroups, ",")
+    requiredGroups := make([]string, 0, len(requiredGroupsRaw))
+    for _, rg := range requiredGroupsRaw {
+        trimmed := strings.TrimSpace(rg)
+        if trimmed != "" {
+            requiredGroups = append(requiredGroups, trimmed)
+        }
+    }
 
-	// Check if oauth is allowed
-	if context.OAuth {
-		log.Debug().Msg("Checking OAuth whitelist")
-		return utils.CheckWhitelist(labels.OAuthWhitelist, context.Username), nil
-	}
+     // Handle case where RequiredGroups label exists but is empty after trimming
+    if len(requiredGroups) == 0 {
+        log.Debug().Str("appId", appId).Str("username", context.Username).Msg("Required groups label was present but empty after trim, access granted.")
+        return true, nil
+    }
 
-	// Check users
-	log.Debug().Msg("Checking users")
+    // Use context.Groups directly (already a []string)
+    userGroups := context.Groups
 
-	return utils.CheckWhitelist(labels.Users, context.Username), nil
+    log.Debug().Strs("required", requiredGroups).Strs("userHas", userGroups).Str("username", context.Username).Msg("Checking group membership using user context")
+
+    // Check if any user group matches any required group
+    groupMatch := false
+    for _, userGroup := range userGroups { // userGroup is already trimmed if done in UseUserContext
+        for _, reqGroup := range requiredGroups {
+            // Consider strings.EqualFold(userGroup, reqGroup) for case-insensitivity
+            if userGroup == reqGroup {
+                groupMatch = true
+                log.Debug().Str("username", context.Username).Str("matchingGroup", userGroup).Msg("Group match found.")
+                break
+            }
+        }
+        if groupMatch {
+            break
+        }
+    }
+
+    if !groupMatch {
+        log.Warn().Str("appId", appId).Str("username", context.Username).Strs("requiredGroups", requiredGroups).Strs("userGroups", userGroups).Msg("Access denied: User does not have any of the required groups in context.")
+        return false, nil
+    }
+
+    log.Debug().Str("username", context.Username).Msg("Access granted: User has a required group.")
+    return true, nil
 }
 
 func (auth *Auth) AuthEnabled(c *gin.Context) (bool, error) {

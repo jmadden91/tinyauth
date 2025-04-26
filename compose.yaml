@@ -2,11 +2,12 @@ services:
   tinyauth:
     container_name: tinyauth
     image: tinyauth-custom:latest
-    # volumes:
-    #   - /var/run/docker.sock:/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file: .env
     networks:
       - proxy
+
 networks:
   proxy:
     external: true

@@ -27,16 +27,20 @@ type SessionCookie struct {
 	Username    string
 	Provider    string
 	TotpPending bool
-	// Added Claims field
-	Claims map[string]interface{} `json:"claims,omitempty"`
+	Claims      map[string]interface{} `json:"claims,omitempty"`
+	Email       string 
+	Name        string
+	PreferredUsername   string
+	Groups      string
 }
 
 // TinyauthLabels is the labels for the tinyauth container
 type TinyauthLabels struct {
-	OAuthWhitelist string
-	Users          string
-	Allowed        string
-	Headers        map[string]string
+    OAuthWhitelist string
+    Users          string
+    Allowed        string
+    Headers        map[string]string
+    RequiredGroups string `json:"requiredGroups,omitempty"`
 }
 
 // UserContext is the context for the user
@@ -46,8 +50,11 @@ type UserContext struct {
 	OAuth       bool
 	Provider    string
 	TotpPending bool
-	// Added Claims field
-	Claims map[string]interface{} `json:"claims,omitempty"`
+	Claims      map[string]interface{} `json:"claims,omitempty"`
+	Email       string
+	Name        string
+	PreferredUsername   string
+	Groups      []string
 }
 
 // LoginAttempt tracks information about login attempts for rate limiting
