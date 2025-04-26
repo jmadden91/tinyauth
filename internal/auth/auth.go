@@ -17,7 +17,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ADD GOB REGISTRATION FOR THE CLAIMS MAP TYPE
 func init() {
 	gob.Register(map[string]interface{}{})
 }
@@ -149,12 +148,12 @@ func (auth *Auth) CreateSessionCookie(c *gin.Context, data *types.SessionCookie)
     if err != nil { return err } // Error already logged
 
     log.Debug().
-        Str("username", data.Username). // This is the primary ID (email/sub)
+        Str("username", data.Username).
         Str("provider", data.Provider).
         Str("groups", data.Groups).
-        Str("email", data.Email).             // Log new field
-        Str("name", data.Name).               // Log new field
-        Str("preferredUsername", data.PreferredUsername). // Log new field
+        Str("email", data.Email).
+        Str("name", data.Name).
+        Str("preferredUsername", data.PreferredUsername).
         Bool("totpPending", data.TotpPending).
         Msg("Setting session cookie values")
 
@@ -162,7 +161,7 @@ func (auth *Auth) CreateSessionCookie(c *gin.Context, data *types.SessionCookie)
     if data.TotpPending { sessionExpiry = 3600 } else { sessionExpiry = auth.Config.SessionExpiry }
 
     // Set data
-    session.Values["username"] = data.Username // Primary ID
+    session.Values["username"] = data.Username
     session.Values["provider"] = data.Provider
     session.Values["expiry"] = time.Now().Add(time.Duration(sessionExpiry) * time.Second).Unix()
     session.Values["totpPending"] = data.TotpPending
@@ -205,7 +204,7 @@ func (auth *Auth) DeleteSessionCookie(c *gin.Context) error {
 func (auth *Auth) GetSessionCookie(c *gin.Context) (types.SessionCookie, error) {
     log.Debug().Msg("Getting session cookie")
     session, err := auth.GetSession(c)
-    if err != nil { return types.SessionCookie{}, err } // Error logged in GetSession
+    if err != nil { return types.SessionCookie{}, err }
 
     // Get essential data
     username, usernameOk := session.Values["username"].(string)
@@ -226,10 +225,10 @@ func (auth *Auth) GetSessionCookie(c *gin.Context) (types.SessionCookie, error) 
     }
 
     // Get additional fields (handle missing fields gracefully)
-    groups, _ := session.Values["groups"].(string)               // Default "" if missing/wrong type
-    email, _ := session.Values["email"].(string)                 // Default ""
-    name, _ := session.Values["name"].(string)                   // Default ""
-    preferredUsername, _ := session.Values["preferred_username"].(string) // Default ""
+    groups, _ := session.Values["groups"].(string)
+    email, _ := session.Values["email"].(string)
+    name, _ := session.Values["name"].(string)
+    preferredUsername, _ := session.Values["preferred_username"].(string)
 
     log.Debug().
         Str("username", username).
@@ -273,14 +272,12 @@ func (auth *Auth) ResourceAllowed(c *gin.Context, context types.UserContext) (bo
         return true, nil
     }
 
-    // Required groups are specified via label. Now check user's groups FROM THE CONTEXT.
-    // Use userContext.Groups instead of the removed groupsHeader argument
     if len(context.Groups) == 0 {
         log.Warn().Str("appId", appId).Str("username", context.Username).Msg("Access denied: Required groups specified, but user context has no groups.")
-        return false, nil // Required groups, but user has none in their context
+        return false, nil
     }
 
-    // Parse required groups (trimming spaces)
+    // Parse required groups
     requiredGroupsRaw := strings.Split(labels.RequiredGroups, ",")
     requiredGroups := make([]string, 0, len(requiredGroupsRaw))
     for _, rg := range requiredGroupsRaw {
@@ -296,14 +293,14 @@ func (auth *Auth) ResourceAllowed(c *gin.Context, context types.UserContext) (bo
         return true, nil
     }
 
-    // Use context.Groups directly (already a []string)
+    // Use context.Groups directly
     userGroups := context.Groups
 
     log.Debug().Strs("required", requiredGroups).Strs("userHas", userGroups).Str("username", context.Username).Msg("Checking group membership using user context")
 
     // Check if any user group matches any required group
     groupMatch := false
-    for _, userGroup := range userGroups { // userGroup is already trimmed if done in UseUserContext
+    for _, userGroup := range userGroups {
         for _, reqGroup := range requiredGroups {
             // Consider strings.EqualFold(userGroup, reqGroup) for case-insensitivity
             if userGroup == reqGroup {

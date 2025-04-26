@@ -27,12 +27,10 @@ func (hooks *Hooks) UseUserContext(c *gin.Context) types.UserContext {
     cookie, err := hooks.Auth.GetSessionCookie(c)
     basic := hooks.Auth.GetBasicAuth(c)
 
-    // Parse groups from cookie (same as before)
     var userGroups []string
     if cookie.Groups != "" {
         userGroups = strings.Split(cookie.Groups, ",")
         for i, group := range userGroups { userGroups[i] = strings.TrimSpace(group) }
-        // Filter empty strings if needed
          cleanedGroups := make([]string, 0, len(userGroups))
         for _, group := range userGroups { if group != "" { cleanedGroups = append(cleanedGroups, group) } }
         userGroups = cleanedGroups
@@ -42,7 +40,7 @@ func (hooks *Hooks) UseUserContext(c *gin.Context) types.UserContext {
     if basic != nil {
         user := hooks.Auth.GetUser(basic.Username)
         if user != nil && hooks.Auth.CheckPassword(*user, basic.Password) {
-            return types.UserContext{ // Populate basic context
+            return types.UserContext{
                 Username:    basic.Username,
                 IsLoggedIn:  true, Provider: "basic",
                 // No OIDC fields for basic auth
@@ -51,22 +49,21 @@ func (hooks *Hooks) UseUserContext(c *gin.Context) types.UserContext {
     }
 
     // --- Cookie Check ---
-    if err != nil || cookie.Username == "" { // Check if cookie retrieval failed or cookie was empty
-        return types.UserContext{IsLoggedIn: false} // Return empty context
+    if err != nil || cookie.Username == "" { 
+        return types.UserContext{IsLoggedIn: false}
     }
 
     if cookie.TotpPending { // Handle TOTP pending
         return types.UserContext{
             Username:    cookie.Username, Provider: cookie.Provider, TotpPending: true,
-            Email: cookie.Email, Name: cookie.Name, PreferredUsername: cookie.PreferredUsername, Groups: userGroups, // Include other fields
+            Email: cookie.Email, Name: cookie.Name, PreferredUsername: cookie.PreferredUsername, Groups: userGroups,
         }
     }
 
-    if cookie.Provider == "username" { // Handle username/password user
+    if cookie.Provider == "username" {
         if hooks.Auth.GetUser(cookie.Username) != nil {
             return types.UserContext{
                 Username: cookie.Username, IsLoggedIn: true, Provider: "username",
-                // No OIDC fields
             }
         }
     }
@@ -75,15 +72,15 @@ func (hooks *Hooks) UseUserContext(c *gin.Context) types.UserContext {
     provider := hooks.Providers.GetProvider(cookie.Provider)
     if provider != nil {
         // Optional: Re-check whitelist if needed, otherwise remove if group check is sufficient
-        if !hooks.Auth.EmailWhitelisted(cookie.Username) { // Still checking primary identifier
+        if !hooks.Auth.EmailWhitelisted(cookie.Username) { 
              log.Warn().Str("username", cookie.Username).Msg("OAuth user session exists but identifier is not whitelisted.")
-             hooks.Auth.DeleteSessionCookie(c) // Clean up invalid session
+             hooks.Auth.DeleteSessionCookie(c)
             return types.UserContext{IsLoggedIn: false}
         }
 
         // Return fully populated context for OAuth user
         return types.UserContext{
-            Username:            cookie.Username, // Primary identifier
+            Username:            cookie.Username,
             IsLoggedIn:          true,
             OAuth:               true,
             Provider:            cookie.Provider,

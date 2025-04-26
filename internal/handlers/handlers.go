@@ -18,7 +18,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Your NewHandlers function (preserved)
 func NewHandlers(handlersConfig types.HandlersConfig, auth *auth.Auth, hooks *hooks.Hooks, providers *providers.Providers, docker *docker.Docker, autoOidcLogin bool) *Handlers {
 	return &Handlers{
 		Config:        handlersConfig,
@@ -30,7 +29,6 @@ func NewHandlers(handlersConfig types.HandlersConfig, auth *auth.Auth, hooks *ho
 	}
 }
 
-// Your Handlers struct (preserved)
 type Handlers struct {
 	Config        types.HandlersConfig
 	Auth          *auth.Auth
@@ -40,7 +38,6 @@ type Handlers struct {
 	AutoOidcLogin bool
 }
 
-// Your AuthHandler function (preserved from previous correction)
 func (h *Handlers) AuthHandler(c *gin.Context) {
 	var proxy types.Proxy
 	err := c.BindUri(&proxy)
@@ -101,7 +98,6 @@ func (h *Handlers) AuthHandler(c *gin.Context) {
 	if userContext.IsLoggedIn {
 		log.Debug().Str("username", userContext.Username).Msg("User is logged in, checking resource access")
 
-		// Call ResourceAllowed WITHOUT groupsHeader argument
 		appAllowed, err := h.Auth.ResourceAllowed(c, userContext)
 
 		if err != nil {
@@ -167,7 +163,6 @@ func (h *Handlers) AuthHandler(c *gin.Context) {
 	}
 }
 
-// LoginHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) LoginHandler(c *gin.Context) {
     var login types.LoginRequest
     err := c.BindJSON(&login)
@@ -236,7 +231,6 @@ func (h *Handlers) LoginHandler(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Logged in", "totpPending": false})
 }
 
-// TotpHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) TotpHandler(c *gin.Context) {
     var totpReq types.TotpRequest
     err := c.BindJSON(&totpReq)
@@ -288,7 +282,6 @@ func (h *Handlers) TotpHandler(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Logged in"})
 }
 
-// LogoutHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) LogoutHandler(c *gin.Context) {
     log.Debug().Msg("Logging out")
     err := h.Auth.DeleteSessionCookie(c)
@@ -300,7 +293,6 @@ func (h *Handlers) LogoutHandler(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "Logged out"})
 }
 
-// AppHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) AppHandler(c *gin.Context) {
     log.Debug().Msg("Getting app context")
     configuredProviders := h.Providers.GetConfiguredProviders()
@@ -321,7 +313,6 @@ func (h *Handlers) AppHandler(c *gin.Context) {
     c.JSON(http.StatusOK, appContext)
 }
 
-// UserHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) UserHandler(c *gin.Context) {
     log.Debug().Msg("Getting user context")
     userContext := h.Hooks.UseUserContext(c)
@@ -344,7 +335,6 @@ func (h *Handlers) UserHandler(c *gin.Context) {
     c.JSON(http.StatusOK, userContextResponse)
 }
 
-// OauthUrlHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) OauthUrlHandler(c *gin.Context) {
     var request types.OAuthRequest
     err := c.BindUri(&request)
@@ -377,11 +367,9 @@ func (h *Handlers) OauthUrlHandler(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"status": http.StatusOK, "message": "OK", "url": authURL})
 }
 
-// --- CORRECTED OauthCallbackHandler ---
 func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
-	// Provider name from URI
-	var providerUriData types.OAuthRequest // Declare variable to hold URI data
-	err := c.BindUri(&providerUriData)     // Use := for first declaration
+	var providerUriData types.OAuthRequest 
+	err := c.BindUri(&providerUriData)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to bind provider name from URI")
 		c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=invalid_provider_uri", h.Config.AppURL))
@@ -391,13 +379,13 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 
 	// --- CSRF Check ---
 	state := c.Query("state")
-	csrfCookie, err := c.Cookie("tinyauth-csrf") // Use = as err is declared above
+	csrfCookie, err := c.Cookie("tinyauth-csrf")
 	if err != nil {
 		log.Warn().Msg("No CSRF cookie found during OAuth callback")
 		c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=csrf_missing", h.Config.AppURL))
 		return
 	}
-	c.SetCookie("tinyauth-csrf", "", -1, "/", "", h.Config.CookieSecure, true) // Clean up immediately
+	c.SetCookie("tinyauth-csrf", "", -1, "/", "", h.Config.CookieSecure, true)
 
 	if csrfCookie != state {
 		log.Warn().Str("state", state).Str("cookie", csrfCookie).Msg("Invalid CSRF cookie or state mismatch")
@@ -407,7 +395,7 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 	log.Debug().Msg("CSRF check passed")
 
 	// --- Token Exchange ---
-	code := c.Query("code") // Define code here
+	code := c.Query("code")
 	if code == "" {
 		log.Error().Msg("Missing authorization code in OAuth callback")
 		c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=code_missing", h.Config.AppURL))
@@ -415,7 +403,6 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 	}
 	log.Debug().Msg("Got authorization code")
 
-	// Define provider instance here
 	provider := h.Providers.GetProvider(providerUriData.Provider)
 	if provider == nil {
 		log.Error().Str("provider", providerUriData.Provider).Msg("OAuth provider instance not found or not configured")
@@ -423,7 +410,7 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Exchange token - use = for err as it was declared above
+	// Exchange token
 	_, err = provider.ExchangeToken(code)
 	if err != nil {
 		log.Error().Err(err).Str("provider", providerUriData.Provider).Msg("Failed to exchange OAuth token")
@@ -434,7 +421,7 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 
 	// --- Get User Info ---
 	var userInfo providers.GenericUserInfoResponse
-	var fetchErr error // Use different error variable for clarity
+	var fetchErr error 
 
 	switch providerUriData.Provider {
 	case "generic":
@@ -444,7 +431,6 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 		} else {
 			fetchErr = errors.New("generic provider not configured")
 		}
-	// Add other provider cases here if needed
 	default:
 		fetchErr = fmt.Errorf("unsupported provider type for fetching user info: %s", providerUriData.Provider)
 	}
@@ -484,7 +470,7 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 		PreferredUsername:   userInfo.PreferredUsername,
 	}
 
-	err = h.Auth.CreateSessionCookie(c, cookieData) // Use = for err reassignment
+	err = h.Auth.CreateSessionCookie(c, cookieData) 
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create session cookie after OAuth callback")
 		c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/error?reason=session_creation", h.Config.AppURL))
@@ -493,15 +479,15 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 	log.Debug().Msg("Session cookie created successfully")
 
 	// --- Redirect ---
-	redirectCookie, err := c.Cookie("tinyauth-redirect") // Use =
+	redirectCookie, err := c.Cookie("tinyauth-redirect")
 	if err != nil {
 		log.Debug().Msg("No redirect cookie found, redirecting to App URL")
 		c.Redirect(http.StatusPermanentRedirect, h.Config.AppURL)
 		return
 	}
-	c.SetCookie("tinyauth-redirect", "", -1, "/", "", h.Config.CookieSecure, true) // Clean up
+	c.SetCookie("tinyauth-redirect", "", -1, "/", "", h.Config.CookieSecure, true) 
 
-	queries, err := query.Values(types.LoginQuery{RedirectURI: redirectCookie}) // Use =
+	queries, err := query.Values(types.LoginQuery{RedirectURI: redirectCookie})
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to build query for continue page redirect")
 		c.Redirect(http.StatusPermanentRedirect, h.Config.AppURL)
@@ -510,7 +496,6 @@ func (h *Handlers) OauthCallbackHandler(c *gin.Context) {
 	c.Redirect(http.StatusPermanentRedirect, fmt.Sprintf("%s/continue?%s", h.Config.AppURL, queries.Encode()))
 }
 
-// HealthcheckHandler (Seems OK from your file, included for completeness)
 func (h *Handlers) HealthcheckHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  http.StatusOK,

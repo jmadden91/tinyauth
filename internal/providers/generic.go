@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"errors" // Add errors import if not already present
-
+	"errors"
 	"github.com/rs/zerolog/log"
 )
 
-// Modify the response struct to include groups
 type GenericUserInfoResponse struct {
 	Email             string   `json:"email"`
 	Groups            []string `json:"groups"`
@@ -20,9 +18,7 @@ type GenericUserInfoResponse struct {
 	Sub string `json:"sub"`
 }
 
-// Update return signature - returning the whole struct might be easier
 func GetGenericUserInfo(client *http.Client, url string) (userInfo GenericUserInfoResponse, err error) {
-	// Initialize empty struct
     userInfo = GenericUserInfoResponse{}
 
 	res, err := client.Get(url)
