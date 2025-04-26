@@ -8,15 +8,6 @@ services:
     networks:
       - proxy
 
-  whoami:
-    container_name: whoami
-    image: traefik/whoami
-    networks:
-      - proxy
-    restart: unless-stopped
-    labels:
-      - "tinyauth.groups.required=admin"
-
 networks:
   proxy:
     external: true
